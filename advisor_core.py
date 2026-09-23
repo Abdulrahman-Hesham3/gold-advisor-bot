@@ -495,8 +495,12 @@ def _error_text(resp):
         return resp.text[:160]
 
 
+RETRYABLE = {429, 500, 502, 503, 504}   # busy / rate-limited: worth trying the next model
+
+
 def call_gemini(system, user_text, max_tokens=2048):
-    """Returns (text, None) on success or (None, short reason) on failure."""
+    """Returns (text, None) on success or (None, reason) on failure.
+    A reason starting with 'busy' means Google's servers were overloaded (temporary)."""
     global _WORKING_MODEL
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -507,18 +511,29 @@ def call_gemini(system, user_text, max_tokens=2048):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         gen = {"temperature": 0.3, "maxOutputTokens": max_tokens,
                "thinkingConfig": {"thinkingLevel": "low"}}
-        for _ in range(2):
+        r = None
+        for attempt in range(3):
             body = {"system_instruction": {"parts": [{"text": system}]},
                     "contents": [{"role": "user", "parts": [{"text": user_text}]}],
                     "generationConfig": gen}
             try:
                 r = requests.post(url, headers=headers, json=body, timeout=45)
             except Exception as e:
-                return None, f"network error ({type(e).__name__})"
+                reason = f"busy (network error: {type(e).__name__})"
+                r = None
+                break
             if r.status_code == 400 and "thinking" in r.text.lower() and "thinkingConfig" in gen:
                 gen = {k: v for k, v in gen.items() if k != "thinkingConfig"}
                 continue
+            if r.status_code in RETRYABLE and attempt == 0:
+                time.sleep(1.5)                           # one quick retry on the same model
+                continue
             break
+        if r is None:
+            continue
+        if r.status_code in RETRYABLE:
+            reason = f"busy (HTTP {r.status_code} from {model})"
+            continue                                      # try the next, lighter model
         if r.status_code in (404, 410) or (r.status_code in (400, 403) and "model" in _error_text(r).lower()):
             reason = f"model {model} unavailable (HTTP {r.status_code})"
             continue
@@ -533,6 +548,15 @@ def call_gemini(system, user_text, max_tokens=2048):
             return text, None
         reason = f"empty reply from {model} ({cand.get('finishReason', 'no candidates')})"
     return None, reason
+
+
+def friendly_problem(reason):
+    """Short, plain-English version of an AI failure for the page."""
+    if reason.startswith("busy"):
+        return "The AI helper is busy right now (Google's servers are overloaded). Try again in a minute."
+    if reason.startswith("no API key"):
+        return "The AI helper isn't switched on for this copy of the app."
+    return f"The AI helper isn't available right now ({reason})."
 
 
 def facts_for_llm(rec, eng):
@@ -586,16 +610,21 @@ def explain_text(facts):
     return fallback, err
 
 
-def answer_text(question, facts):
+def answer(question, facts):
+    """Returns (answer, None) from the AI, or (explanatory message, reason) on failure."""
     question = (question or "").strip()[:500]
     if not question:
-        return "Type a question first."
+        return "Type a question first.", "empty question"
     text, err = call_gemini(QA_SYSTEM, "Facts (JSON):\n" + json.dumps(facts, indent=1)
                             + f"\n\nUser question: {question}", max_tokens=1024)
     if text:
-        return text
-    return ("The question box needs the AI layer, which isn't available right now "
-            f"({err}). The 'Why this call?' and 'How reliable is this?' tabs still work.")
+        return text, None
+    return (friendly_problem(err) + " The question box needs the AI layer, which isn't available "
+            "right now. The 'Why this call?' and 'How reliable is this?' tabs still work."), err
+
+
+def answer_text(question, facts):
+    return answer(question, facts)[0]
 
 
 # ----------------------------------------------------------------------

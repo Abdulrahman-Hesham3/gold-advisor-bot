@@ -28,14 +28,38 @@ def get_engine():
     return core.Engine()
 
 
-@st.cache_data(ttl=24 * 3600, show_spinner=False)
-def cached_explanation(facts_json):
-    return core.explain_text(json.loads(facts_json))
+class NotCached(Exception):
+    """Raised inside a cached function so failures are never stored (Streamlit doesn't cache errors)."""
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def cached_answer(question, facts_json):
-    return core.answer_text(question, json.loads(facts_json))
+def _explanation_ok(facts_json):
+    text, problem = core.explain_text(json.loads(facts_json))
+    if problem:
+        raise NotCached(text, problem)
+    return text
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _answer_ok(question, facts_json):
+    text, problem = core.answer(question, json.loads(facts_json))
+    if problem:
+        raise NotCached(text, problem)
+    return text
+
+
+def explanation(facts_json):
+    try:
+        return _explanation_ok(facts_json), None
+    except NotCached as e:
+        return e.args[0], e.args[1]
+
+
+def answer(question, facts_json):
+    try:
+        return _answer_ok(question, facts_json)
+    except NotCached as e:
+        return e.args[0]
 
 
 EXAMPLE_QUESTIONS = ["What does RSI mean?", "Why is the recommendation what it is?",
@@ -84,17 +108,17 @@ with ask:
     st.caption("Try: " + " · ".join(f"*{q}*" for q in EXAMPLE_QUESTIONS))
     if sent and question.strip():
         with st.spinner("Thinking..."):
-            st.markdown(cached_answer(question.strip()[:500], facts_json))
+            st.markdown(answer(question.strip()[:500], facts_json))
 
 with about:
     st.markdown(core.ABOUT_MD)
 
 with why:  # filled last so the charts don't wait for the AI
     with st.spinner("Writing a plain-English explanation..."):
-        text, problem = cached_explanation(facts_json)
+        text, problem = explanation(facts_json)
     st.markdown(text)
     if problem:
-        st.caption(f"AI rewrite unavailable ({problem}). Showing the built-in explanation.")
+        st.caption(core.friendly_problem(problem) + " Showing the built-in explanation for now.")
     with st.expander("The rule-based reasons behind it"):
         st.markdown("\n".join(f"- {r}" for r in rec["reasons"]))
 

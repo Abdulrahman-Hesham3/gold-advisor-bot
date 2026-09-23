@@ -221,3 +221,44 @@ def test_web_page_updates_when_a_weekend_day_is_picked(page, eng):
     page.date_input(key="day").set_value((friday + pd.Timedelta(days=1)).date()).run()
     assert not page.exception
     assert "not a trading day" in _page_html(page)
+
+
+# ---------------------------------------------------------------- AI layer resilience
+class _FakeResponse:
+    def __init__(self, status, body):
+        import json as _json
+        self.status_code, self._body, self.text = status, body, _json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+def test_busy_ai_model_falls_back_to_the_next_one(monkeypatch):
+    """A 503 'high demand' reply from the first model hands over to the lighter backup model."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.setattr(core, "_WORKING_MODEL", None)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        if len(calls) <= 2:  # first model busy on the first try and on the retry
+            return _FakeResponse(503, {"error": {"message": "This model is experiencing high demand."}})
+        return _FakeResponse(200, {"candidates": [{"content": {"parts": [{"text": "Plain answer."}]}}]})
+
+    monkeypatch.setattr(core.requests, "post", fake_post)
+    text, problem = core.call_gemini("system", "question")
+    assert text == "Plain answer." and problem is None
+    assert "gemini-flash-latest" in calls[0] and "gemini-flash-latest" not in calls[-1]
+
+
+def test_all_models_busy_gives_a_friendly_message(eng, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(core, "_WORKING_MODEL", None)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    monkeypatch.setattr(core.requests, "post",
+                        lambda url, **kw: _FakeResponse(503, {"error": {"message": "high demand"}}))
+    facts = core.facts_for_llm(eng.recommend(None), eng)
+    text, problem = core.answer("What does RSI mean?", facts)
+    assert problem.startswith("busy") and "Try again in a minute" in text
