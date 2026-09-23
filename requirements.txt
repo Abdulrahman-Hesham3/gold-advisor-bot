@@ -1,0 +1,7 @@
+streamlit==1.64.0
+numpy
+pandas
+matplotlib
+requests
+yfinance
+curl_cffi
