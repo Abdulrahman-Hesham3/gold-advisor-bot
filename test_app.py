@@ -173,7 +173,20 @@ def test_card_is_honest(eng):
     html = core.card_html(eng.recommend(None), eng)
     assert "not financial advice" in html
     assert "of the time" in html              # the coin-flip track record is on the card
-    assert "Under the app's strategy" in html  # what the call means for the position
+    assert "What a " in html and "call means" in html  # what the call means for the position
+    assert "next trading day" in html              # the forecast horizon is stated
+    assert "not</b> the chance of being right" in html
+
+
+def test_buy_wording_never_says_hold():
+    """User test fix: 'a Buy call means holding gold' was read as 'Hold'."""
+    assert "hold" not in core.STRATEGY_MEANING["BUY"].lower()
+    assert "hold" not in core.STRATEGY_MEANING["SELL"].lower()
+
+
+def test_strength_labels():
+    assert [core.strength_word(c) for c in (0, 33.9, 34, 66.9, 67, 100)] == \
+        ["Weak", "Weak", "Moderate", "Moderate", "Strong", "Strong"]
 
 
 # ---------------------------------------------------------------- resilience

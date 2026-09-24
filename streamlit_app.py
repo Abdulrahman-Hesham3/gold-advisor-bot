@@ -62,22 +62,24 @@ def answer(question, facts_json):
         return e.args[0]
 
 
-EXAMPLE_QUESTIONS = ["What does RSI mean?", "Why is the recommendation what it is?",
+EXAMPLE_QUESTIONS = ["How far ahead does it predict?", "What does 'strength of this call' mean?",
                      "How often is this model right?", "Should I sell my gold now?"]
 
 eng = get_engine()
 first, last = eng.table.index[0].date(), eng.table.index[-1].date()
 
 st.title("Gold Advisor Bot")
-st.markdown("Pick a day and get the model's **Buy / Hold / Sell** call for the next trading day, "
-            "with the reasons in plain English and an honest look at how reliable it is. "
-            "*Student project. Not financial advice.*")
+st.markdown("A simple **Buy, Hold or Sell** suggestion for gold, for the **next trading day**, "
+            "explained in plain English. *Student project. Not financial advice.*")
+st.markdown("**How to use it:** 1. Pick a day below, or keep the latest one. "
+            "2. Read the suggestion and why. 3. Check *How reliable is this?* before trusting it.")
 
 if "day" not in st.session_state:
     st.session_state.day = last
-left, right = st.columns([3, 1], vertical_alignment="bottom")
+box = st.container(border=True)
+left, right = box.columns([3, 1], vertical_alignment="bottom")
 with left:
-    st.date_input("Day to analyse", key="day", min_value=first, max_value=last, format="DD/MM/YYYY",
+    st.date_input("📅 Choose a day to get a suggestion for", key="day", min_value=first, max_value=last, format="DD/MM/YYYY",
                   help=f"Any day from {first:%d %b %Y} (after the model's training period) "
                        f"to {last:%d %b %Y}. Weekends and holidays use the previous trading day.")
 with right:
@@ -86,8 +88,18 @@ with right:
 rec = eng.recommend(pd.Timestamp(st.session_state.day))
 facts_json = json.dumps(core.facts_for_llm(rec, eng), sort_keys=True)
 
-st.caption(f"Prices: {eng.source}")
+st.caption(f"Prices: COMEX gold futures (GC=F), the benchmark exchange price. Source: {eng.source}")
 st.markdown(core.card_html(rec, eng), unsafe_allow_html=True)
+st.write("")
+bt = eng.backtest
+prev_close = eng.feat["Close"].shift(1).loc[rec["date"]]
+m1, m2, m3 = st.columns(3)
+m1.metric("Gold price (close)", f"${rec['close']:,.0f}",
+          f"{(rec['close'] / prev_close - 1) * 100:+.2f}% on the day")
+m2.metric("Calls right since " + f"{bt['start']:%b %Y}", f"{bt['hit_rate']:.0f}%",
+          f"{bt['hit_rate'] - bt['always_up']:+.1f} pts vs always 'up'", delta_color="off")
+m3.metric("Following the app vs holding", f"{bt['strat_ret']:+.0f}%",
+          f"holding gold: {bt['bh_ret']:+.0f}%", delta_color="off")
 st.write("")
 
 why, chart, reliable, ask, about = st.tabs(
